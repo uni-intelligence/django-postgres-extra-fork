@@ -589,3 +589,36 @@ def test_partitioning_time_multiple_sizes():
 
     with pytest.raises(PostgresPartitioningError):
         partition_by_current_time(model, weeks=1, months=2, count=1)
+
+
+@pytest.mark.postgres_version(lt=110000)
+def test_partitioning_deferred():
+    """Tests whether automatically creating new partitions ahead yearly works
+    as expected."""
+
+    model = define_fake_partitioned_model(
+        {"timestamp": models.DateTimeField()}, {"key": ["timestamp"]}
+    )
+
+    schema_editor = connection.schema_editor()
+    schema_editor.create_partitioned_model(model)
+
+    manager = PostgresPartitioningManager(
+        [partition_by_current_time(model, years=1, count=2, max_age=relativedelta(years=1))]
+    )
+
+    with freezegun.freeze_time("2019-1-1"):
+        manager.plan(deferred_attach=True, detach='concurrently').apply()
+
+    table = _get_partitioned_table(model)
+    assert len(table.partitions) == 2
+    assert table.partitions[0].name == "2019"
+    assert table.partitions[1].name == "2020"
+
+    with freezegun.freeze_time("2020-01-01"):
+        manager.plan(deferred_attach=True).apply()
+
+    table = _get_partitioned_table(model)
+    assert len(table.partitions) == 2
+    assert table.partitions[1].name == "2020"
+    assert table.partitions[2].name == "2021"
