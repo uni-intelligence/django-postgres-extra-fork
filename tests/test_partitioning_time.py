@@ -1,9 +1,12 @@
+import argparse
 import datetime
+from unittest.mock import patch
 
 import freezegun
 import pytest
 
 from dateutil.relativedelta import relativedelta
+from django.core.management import call_command
 from django.db import connection, models, transaction
 from django.db.utils import IntegrityError
 
@@ -592,23 +595,22 @@ def test_partitioning_time_multiple_sizes():
 
 
 @pytest.mark.postgres_version(lt=110000)
-def test_partitioning_deferred():
-    """Tests whether automatically creating new partitions ahead yearly works
-    as expected."""
-
+@patch('psqlextra.management.commands.pgpartition.Command._partitioning_manager')
+def test_partitioning_deferred_create(manager_mock):
+    """Tests whether calling pgpartition with ----defer-attach flag creates partitions."""
     model = define_fake_partitioned_model(
         {"timestamp": models.DateTimeField()}, {"key": ["timestamp"]}
     )
-
     schema_editor = connection.schema_editor()
     schema_editor.create_partitioned_model(model)
 
     manager = PostgresPartitioningManager(
         [partition_by_current_time(model, years=1, count=2, max_age=relativedelta(years=1))]
     )
+    manager_mock.return_value = manager
 
     with freezegun.freeze_time("2019-1-1"):
-        manager.plan(deferred_attach=True, detach='concurrently').apply()
+        call_command("pgpartition", "--defer-attach",  "--yes")
 
     table = _get_partitioned_table(model)
     assert len(table.partitions) == 2
@@ -616,9 +618,10 @@ def test_partitioning_deferred():
     assert table.partitions[1].name == "2020"
 
     with freezegun.freeze_time("2020-01-01"):
-        manager.plan(deferred_attach=True).apply()
+        call_command("pgpartition", "--defer-attach", "--yes")
 
     table = _get_partitioned_table(model)
     assert len(table.partitions) == 2
-    assert table.partitions[1].name == "2020"
-    assert table.partitions[2].name == "2021"
+    assert table.partitions[0].name == "2020"
+    assert table.partitions[1].name == "2021"
+
